@@ -4,10 +4,7 @@ HeraNorm is an R Shiny-based application designed to systematically identify and
 You need to install the packages:
 
 DESeq2
-
 ggplot2
-
 dplyr
-
 shiny
 

@@ -31,7 +31,7 @@ ui <- fluidPage(
       # Plotting options
       h4("Plotting Options"),
       selectInput("plotGeneType", "Select Gene Type", choices = c("DEG", "Endogenous Control")),
-      uiOutput("geneSelector"),  # Dynamically generated gene selector
+      uiOutput("geneSelector"),
       actionButton("plotGene", "Plot Gene Expression"),
       hr(),
 
@@ -71,12 +71,14 @@ server <- function(input, output, session) {
     sample_info <- read.table(input$groupFile$datapath, header = TRUE, sep = "\t", row.names = 1)
 
     if (!all(rownames(sample_info) %in% colnames(counts_matrix))) {
-      showNotification("The sample order in the group information file does not match the column order in the count matrix. Please check your files.", type = "error")
+      showNotification("Sample names in group file don't match count matrix columns!", type = "error")
       return(NULL)
     }
 
     counts_matrix <- counts_matrix[, rownames(sample_info)]
-    dds <- DESeqDataSetFromMatrix(countData = counts_matrix, colData = sample_info, design = ~ condition)
+    dds <- DESeqDataSetFromMatrix(countData = counts_matrix, 
+                                 colData = sample_info, 
+                                 design = ~ condition)
     dds <- dds[rowSums(counts(dds)) > 1, ]
     dds <- DESeq(dds)
 
@@ -100,19 +102,16 @@ server <- function(input, output, session) {
           TRUE, FALSE)
       )
 
-    endogenous_control_data <- res_df %>% filter(endogenous_control == TRUE)
-    deg_data <- res_df %>% filter(DEG == TRUE)
-
     list(
       raw_counts = raw_counts,
       normalized_counts = normalized_counts,
       sample_info = sample_info,
-      endogenous_control_data = endogenous_control_data,
-      deg_data = deg_data
+      endogenous_control_data = res_df %>% filter(endogenous_control == TRUE),
+      deg_data = res_df %>% filter(DEG == TRUE)
     )
   })
 
-  # Dynamic gene selectors
+  # Dynamic UI elements
   output$geneSelector <- renderUI({
     data <- dataInput()
     req(data)
@@ -127,13 +126,15 @@ server <- function(input, output, session) {
   output$endoControlSelector <- renderUI({
     data <- dataInput()
     req(data)
-    selectInput("selectedEndoControl", "Select Endogenous Control Gene", choices = data$endogenous_control_data$gene_name)
+    selectInput("selectedEndoControl", "Select Endogenous Control Gene", 
+               choices = data$endogenous_control_data$gene_name)
   })
 
   output$degSelector <- renderUI({
     data <- dataInput()
     req(data)
-    selectInput("selectedDeg", "Select Target Gene (DEG)", choices = data$deg_data$gene_name)
+    selectInput("selectedDeg", "Select Target Gene (DEG)", 
+               choices = data$deg_data$gene_name)
   })
 
   # Table outputs
@@ -151,135 +152,132 @@ server <- function(input, output, session) {
       select(gene_name, baseMean, log2FoldChange, pvalue, padj)
   })
 
-  # Download tables
+  # Download handlers
   output$downloadEndogenous <- downloadHandler(
-    filename = function() { paste("endogenous_control_table_", Sys.Date(), ".csv", sep = "") },
+    filename = function() { paste("endogenous_controls_", Sys.Date(), ".csv", sep = "") },
     content = function(file) {
       data <- dataInput()
       req(data)
-      write.csv(data$endogenous_control_data %>% select(gene_name, baseMean, log2FoldChange, pvalue, padj), file, row.names = FALSE)
+      write.csv(data$endogenous_control_data, file, row.names = FALSE)
     }
   )
 
   output$downloadDeg <- downloadHandler(
-    filename = function() { paste("deg_table_", Sys.Date(), ".csv", sep = "") },
+    filename = function() { paste("DEGs_", Sys.Date(), ".csv", sep = "") },
     content = function(file) {
       data <- dataInput()
       req(data)
-      write.csv(data$deg_data %>% select(gene_name, baseMean, log2FoldChange, pvalue, padj), file, row.names = FALSE)
+      write.csv(data$deg_data, file, row.names = FALSE)
     }
   )
 
-  # Plotting logic: Gene Expression Plot
+  # Plot data preparation
   genePlotData <- reactive({
     data <- dataInput()
-    req(data)
-    normalized_counts <- data$normalized_counts
-    sample_info <- data$sample_info
-    selected_gene <- input$selectedGene
-    req(selected_gene %in% rownames(normalized_counts))
-
-    data.frame(
-      Sample = colnames(normalized_counts),
-      Expression = as.numeric(normalized_counts[selected_gene, ]),
-      Group = sample_info$condition
+    req(data, input$selectedGene)
+    gene <- input$selectedGene
+    df <- data.frame(
+      Sample = colnames(data$normalized_counts),
+      Expression = as.numeric(data$normalized_counts[gene, ]),
+      Group = data$sample_info$condition
     )
+    df[complete.cases(df), ]
   })
 
-  output$genePlot <- renderPlot({
-    plot_data <- genePlotData()
-
-    # Compute Wilcoxon p-value
-    wilcox_p <- wilcox.test(Expression ~ Group, data = plot_data)$p.value
-
-    # Generate the plot
-    ggplot(plot_data, aes(x = Group, y = Expression, fill = Group)) +
-      geom_boxplot(outlier.shape = NA) +
-      geom_jitter(width = 0.2, alpha = 0.6) +
-      labs(
-        title = paste0("Gene Expression: ", input$selectedGene),
-        subtitle = paste("Wilcoxon p-value:", signif(wilcox_p, 3)),
-        x = "Group",
-        y = "Normalized Expression"
-      ) +
-      theme_minimal()
-  })
-
-  output$downloadGenePlot <- downloadHandler(
-    filename = function() {
-      paste("gene_expression_plot_", input$selectedGene, "_", Sys.Date(), ".pdf", sep = "")
-    },
-    content = function(file) {
-      pdf(file, width = 10, height = 7)
-      print(ggplot(genePlotData(), aes(x = Group, y = Expression, fill = Group)) +
-        geom_boxplot(outlier.shape = NA) +
-        geom_jitter(width = 0.2, alpha = 0.6) +
-        labs(
-          title = paste0("Gene Expression: ", input$selectedGene),
-          x = "Group",
-          y = "Normalized Expression"
-        ) +
-        theme_minimal())
-      dev.off()
-    }
-  )
-
-  # Plotting logic: Relative Expression Plot
   relativePlotData <- reactive({
     data <- dataInput()
-    req(data)
-    raw_counts <- data$raw_counts
-    sample_info <- data$sample_info
-    endo_gene <- input$selectedEndoControl
-    deg_gene <- input$selectedDeg
-    req(all(c(endo_gene, deg_gene) %in% rownames(raw_counts)))
+    req(data, input$selectedEndoControl, input$selectedDeg)
+    df <- data.frame(
+      Sample = colnames(data$raw_counts),
+      Endo = as.numeric(data$raw_counts[input$selectedEndoControl, ]),
+      DEG = as.numeric(data$raw_counts[input$selectedDeg, ]),
+      Group = data$sample_info$condition
+    ) %>%
+      mutate(Relative = DEG / Endo)
+    df[complete.cases(df), ]
+  })
 
-    relative_expression <- raw_counts[deg_gene, ] / raw_counts[endo_gene, ]
-    data.frame(
-      Sample = colnames(raw_counts),
-      RelativeExpression = as.numeric(relative_expression),
-      Group = sample_info$condition
-    )
+  # Plot rendering
+  output$genePlot <- renderPlot({
+    df <- genePlotData()
+    wilcox_p <- wilcox.test(Expression ~ Group, data = df)$p.value
+    
+    ggplot(df, aes(x = Group, y = Expression, fill = Group)) +
+      geom_boxplot(outlier.shape = NA) +
+      geom_jitter(width = 0.2, alpha = 0.6) +
+      labs(title = paste("Expression of", input$selectedGene),
+           subtitle = paste("Wilcoxon p-value:", format.pval(wilcox_p, digits = 3)),
+           x = "Group", y = "Normalized Expression") +
+      theme_minimal() +
+      theme(legend.position = "none",
+            aspect.ratio = 1,
+            text = element_text(size = 16))
   })
 
   output$relativePlot <- renderPlot({
-    plot_data <- relativePlotData()
-
-    # Compute Wilcoxon p-value
-    wilcox_p <- wilcox.test(RelativeExpression ~ Group, data = plot_data)$p.value
-
-    # Generate the plot
-    ggplot(plot_data, aes(x = Group, y = RelativeExpression, fill = Group)) +
+    df <- relativePlotData()
+    wilcox_p <- wilcox.test(Relative ~ Group, data = df)$p.value
+    
+    ggplot(df, aes(x = Group, y = Relative, fill = Group)) +
       geom_boxplot(outlier.shape = NA) +
       geom_jitter(width = 0.2, alpha = 0.6) +
-      labs(
-        title = paste0("Relative Expression: ", input$selectedDeg, " / ", input$selectedEndoControl),
-        subtitle = paste("Wilcoxon p-value:", signif(wilcox_p, 3)),
-        x = "Group",
-        y = "Relative Expression"
-      ) +
-      theme_minimal()
+      labs(title = paste(input$selectedDeg, "/", input$selectedEndoControl),
+           subtitle = paste("Wilcoxon p-value:", format.pval(wilcox_p, digits = 3)),
+           x = "Group", y = "Relative Expression") +
+      theme_minimal() +
+      theme(legend.position = "none",
+            aspect.ratio = 1,
+            text = element_text(size = 16))
   })
+
+  # Plot download handlers
+  output$downloadGenePlot <- downloadHandler(
+    filename = function() {
+      paste("gene_plot_", input$selectedGene, "_", Sys.Date(), ".pdf", sep = "")
+    },
+    content = function(file) {
+      df <- genePlotData()
+      wilcox_p <- wilcox.test(Expression ~ Group, data = df)$p.value
+      
+      p <- ggplot(df, aes(x = Group, y = Expression, fill = Group)) +
+        geom_boxplot(outlier.shape = NA) +
+        geom_jitter(width = 0.2, alpha = 0.6) +
+        labs(title = paste("Expression of", input$selectedGene),
+             subtitle = paste("Wilcoxon p-value:", format.pval(wilcox_p, digits = 3)),
+             x = "Group", y = "Normalized Expression") +
+        theme_minimal() +
+        theme(legend.position = "none",
+              aspect.ratio = 1,
+              text = element_text(size = 16))
+      
+      ggsave(file, plot = p, device = "pdf", width = 8, height = 6)
+    }
+  )
 
   output$downloadRelativePlot <- downloadHandler(
     filename = function() {
-      paste("relative_expression_plot_", input$selectedDeg, "_", input$selectedEndoControl, "_", Sys.Date(), ".pdf", sep = "")
+      paste("relative_expression_", input$selectedDeg, "_", 
+           input$selectedEndoControl, "_", Sys.Date(), ".pdf", sep = "")
     },
     content = function(file) {
-      pdf(file, width = 10, height = 7)
-      print(ggplot(relativePlotData(), aes(x = Group, y = RelativeExpression, fill = Group)) +
+      df <- relativePlotData()
+      wilcox_p <- wilcox.test(Relative ~ Group, data = df)$p.value
+      
+      p <- ggplot(df, aes(x = Group, y = Relative, fill = Group)) +
         geom_boxplot(outlier.shape = NA) +
         geom_jitter(width = 0.2, alpha = 0.6) +
-        labs(
-          title = paste0("Relative Expression: ", input$selectedDeg, " / ", input$selectedEndoControl),
-          x = "Group",
-          y = "Relative Expression"
-        ) +
-        theme_minimal())
-      dev.off()
+        labs(title = paste(input$selectedDeg, "/", input$selectedEndoControl),
+             subtitle = paste("Wilcoxon p-value:", format.pval(wilcox_p, digits = 3)),
+             x = "Group", y = "Relative Expression") +
+        theme_minimal() +
+        theme(legend.position = "none",
+              aspect.ratio = 1,
+              text = element_text(size = 16))
+      
+      ggsave(file, plot = p, device = "pdf", width = 8, height = 6)
     }
   )
 }
 
-# Run the app
+# Run the application
 shinyApp(ui = ui, server = server)

@@ -10,3 +10,5 @@ shiny
 pheatmap
 plotly
 RColorBrewer
+
+You can see more details on dependency.txt

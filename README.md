@@ -7,4 +7,6 @@ DESeq2
 ggplot2
 dplyr
 shiny
-
+pheatmap
+plotly
+RColorBrewer

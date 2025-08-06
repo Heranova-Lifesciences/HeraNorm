@@ -5,6 +5,7 @@ library(ggplot2)
 library(pheatmap)
 library(plotly)
 library(RColorBrewer)
+library(grid)
 
 options(shiny.maxRequestSize=60*1024^2)
 
@@ -84,7 +85,7 @@ ui <- fluidPage(
 
 # Define server logic
 server <- function(input, output, session) {
-
+  
   
   # Create reactive values to store analysis results
   analysisResults <- reactiveValues(data = NULL)
@@ -153,10 +154,11 @@ server <- function(input, output, session) {
               abs(log2FoldChange) > input$degLog2FC,
             TRUE, FALSE)
         )
-      
+      vsd <- varianceStabilizingTransformation(dds, blind = FALSE)
+      vst_data <- assay(vsd) 
       # Store results
       analysisResults$data <- list(
-        dds = dds,
+        vst_data = vst_data,
         raw_counts = raw_counts,
         normalized_counts = normalized_counts,
         sample_info = sample_info,
@@ -344,34 +346,28 @@ server <- function(input, output, session) {
   )
   
   # Heatmap data preparation
+  # Heatmap data preparation
   heatmapData <- reactive({
-	req(input$heatmapNumGenes, input$heatmapColor)
+    req(input$heatmapNumGenes, input$heatmapColor)
     data <- dataInput()
     req(data, nrow(data$deg_data) > 0)
-    
     # Select top DEGs by significance
     deg_genes <- data$deg_data %>%
       arrange(pvalue) %>%
       head(input$heatmapNumGenes) %>%
       pull(gene_name)
     
-    # Apply variance stabilizing transformation
-    vsd <- varianceStabilizingTransformation(data$dds, blind = FALSE)
-    norm_data <- assay(vsd)
+    norm_data <- data$vst_data
     
     # Subset DEG data
     deg_data <- norm_data[deg_genes, , drop = FALSE]
-    
     # Apply row Z-scoring
     scaled_data <- t(scale(t(deg_data)))
-    
     # Get condition info
     condition_info <- data$sample_info$condition
     names(condition_info) <- rownames(data$sample_info)
-    
     # Group
     grouped_samples <- split(colnames(deg_data), condition_info[colnames(deg_data)])
-    
     # clustering
     clustered_samples <- lapply(grouped_samples, function(group_samples) {
       if(length(group_samples) > 2) {
@@ -382,32 +378,26 @@ server <- function(input, output, session) {
         group_samples
       }
     })
-    
     # order_samples
     ordered_samples <- unlist(clustered_samples)
-    
     # reorder
     scaled_data <- scaled_data[, ordered_samples, drop = FALSE]
-    
     # group annotation
     annotation_df <- data.frame(Condition = condition_info[colnames(scaled_data)],
                                 row.names = colnames(scaled_data))
-    
     # color map
     color_map <- switch(input$heatmapColor,
                         "Blue-White-Red" = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(100),
                         "Purple-White-Green" = colorRampPalette(brewer.pal(n = 11, name = "PiYG"))(100),
                         "Blue-Yellow-Red" = colorRampPalette(brewer.pal(n = 11, name = "Spectral"))(100))
-    
     # gaps col
-	gaps_col <- cumsum(sapply(clustered_samples, length))
-	if (length(gaps_col) > 1) {
-	gaps_col <- gaps_col[-length(gaps_col)]
-	gaps_col <- gaps_col[gaps_col < ncol(deg_data)]
-} else {
-  gaps_col <- NULL  # 单个组时设置为NULL
-}
-    
+    gaps_col <- cumsum(sapply(clustered_samples, length))
+    if (length(gaps_col) > 1) {
+      gaps_col <- gaps_col[-length(gaps_col)]
+      gaps_col <- gaps_col[gaps_col < ncol(deg_data)]
+    } else {
+      gaps_col <- integer(0)
+    }
     list(
       matrix = scaled_data,
       annotation = annotation_df,
@@ -415,7 +405,6 @@ server <- function(input, output, session) {
       gaps_col = gaps_col
     )
   })
-  
   # Render heatmap
   output$heatmap <- renderPlot({
     hm_data <- heatmapData()
@@ -433,42 +422,51 @@ server <- function(input, output, session) {
              border_color = NA)
   })
   outputOptions(output, "heatmap", suspendWhenHidden = FALSE)
+  
   # Download heatmap
-	output$downloadHeatmap <- downloadHandler(
-  filename = function() {
-    paste("DEG_heatmap_", Sys.Date(), ".pdf", sep = "")
-  },
-  content = function(file) {
-    hm_data <- heatmapData()
-    
-    pdf(file, width = 10, height = 0.5 * nrow(hm_data$matrix) + 2)
-    print( 
-      pheatmap(hm_data$matrix,
-               annotation_col = hm_data$annotation,
-               color = hm_data$color_map,
-               show_rownames = ifelse(input$heatmapNumGenes <= 50, TRUE, FALSE),
-               show_colnames = TRUE,
-               cluster_rows = TRUE,
-               cluster_cols = FALSE,
-               gaps_col = hm_data$gaps_col,
-               fontsize_row = ifelse(input$heatmapNumGenes <= 30, 10, 8),
-               main = paste("Top", nrow(hm_data$matrix), "Differentially Expressed Genes"),
-               border_color = NA)
-    )
-    dev.off()
-  }
-)
+  output$downloadHeatmap <- downloadHandler(
+    filename = function() {
+      paste("DEG_heatmap_", Sys.Date(), ".pdf", sep = "")
+    },
+    content = function(file) {
+      hm_data <- heatmapData()
+      height_val <- max(8, 0.5 * nrow(hm_data$matrix) + 2)
+      
+      pdf(file, width = 10, height = height_val)
+      
+      hm <- pheatmap(hm_data$matrix,
+                     annotation_col = hm_data$annotation,
+                     color = hm_data$color_map,
+                     show_rownames = ifelse(input$heatmapNumGenes <= 50, TRUE, FALSE),
+                     show_colnames = TRUE,
+                     cluster_rows = TRUE,
+                     cluster_cols = FALSE,
+                     gaps_col = hm_data$gaps_col,
+                     fontsize_row = ifelse(input$heatmapNumGenes <= 30, 10, 8),
+                     main = paste("Top", nrow(hm_data$matrix), "Differentially Expressed Genes"),
+                     border_color = NA)
+      
+      if (requireNamespace("grid", quietly = TRUE)) {
+        grid::grid.newpage()
+        grid::grid.draw(hm$gtable)
+      } else {
+        print(hm$gtable)
+      }
+      
+      dev.off()
+    }
+  )
   
   
   # Volcano plot data preparation
   volcanoData <- reactive({
     data <- dataInput()
     req(data)
-
+    
     data$res_df %>%
       mutate(
         significance = case_when(
-       
+          
           pvalue < input$degPvalue &
             baseMean > input$degBaseMean &
             abs(log2FoldChange) > input$degLog2FC ~ ifelse(log2FoldChange > 0, "Up-regulated", "Down-regulated"),
@@ -477,7 +475,7 @@ server <- function(input, output, session) {
         log10p = -log10(pvalue + 1e-300)  # Handle p-value = 0
       )
   })
-
+  
   # Render interactive volcano plot
   output$volcanoPlot <- renderPlotly({
     vdata <- volcanoData()
@@ -485,9 +483,9 @@ server <- function(input, output, session) {
     p <- ggplot(vdata, aes(x = log2FoldChange, y = log10p, 
                            color = significance, 
                            text = paste("Gene:", gene_name,
-                                       "<br>log2FC:", round(log2FoldChange, 2),
-                                       "<br>p-value:", format.pval(pvalue, digits = 3),
-                                       "<br>baseMean:", round(baseMean, 1)))) +
+                                        "<br>log2FC:", round(log2FoldChange, 2),
+                                        "<br>p-value:", format.pval(pvalue, digits = 3),
+                                        "<br>baseMean:", round(baseMean, 1)))) +
       geom_point(alpha = 0.6, size = 1.5) +
       geom_vline(xintercept = c(-input$degLog2FC, input$degLog2FC), 
                  linetype = "dashed", color = "black", alpha = 0.5) +
@@ -519,7 +517,7 @@ server <- function(input, output, session) {
       layout(hoverlabel = list(bgcolor = "white", font = list(size = 12)),
              legend = list(orientation = "h", y = -0.2))
   })
-
+  
   # Download volcano plot as PDF
   output$downloadVolcano <- downloadHandler(
     filename = function() {

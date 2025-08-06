@@ -10,5 +10,6 @@ shiny
 pheatmap
 plotly
 RColorBrewer
+grid
 
 You can see more details on dependency.txt

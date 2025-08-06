@@ -11,4 +11,6 @@ pheatmap ≥1.0.12
 plotly ≥4.10.4
 RColorBrewer ≥1.1.3
 
+Please refer to the HeraNorm_protocol.docx to run the app.
+
 For full dependencies, please refer to dependencies.txt
